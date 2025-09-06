@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Make sure ALL colors use proper #RRGGBB or #AARRGGBB format -->
+    <color name="colorPrimary">#FF012564</color>
+    <color name="colorPrimaryDark">#FF011C4D</color>
+    <color name="colorAccent">#FFFF4081</color>
+    
+    <!-- Launcher background should be a valid color -->
+    <color name="ic_launcher_background">#FF012564</color>
+    
+    <!-- Remove any colors that don't use proper hex format -->
+    <!-- Remove any empty or malformed color tags -->
+</resources>

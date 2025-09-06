@@ -1,0 +1,1150 @@
+import 'package:amde_haymanot_abalat_guday/models/ethiopian_date_picker.dart';
+import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:amde_haymanot_abalat_guday/main.dart'; // For Supabase instance
+import 'package:intl/intl.dart';
+import 'package:go_router/go_router.dart';
+import 'package:provider/provider.dart';
+import 'package:shimmer/shimmer.dart';
+import 'package:animate_do/animate_do.dart';
+import 'dart:developer' as developer;
+
+import 'package:amde_haymanot_abalat_guday/admin only/user_provider.dart';
+
+// --- UI Theme Constants ---
+const Color kBackgroundColor = Color(0xFF1A1A2E);
+const Color kCardColor = Color(0xFF1F1F3D);
+const Color kPrimaryAccentColor = Color(0xFF00F5D4);
+const Color kSecondaryTextColor = Color(0xFF9A9A9A);
+
+// --- MODELS needed for the new sections ---
+class DailyAttendance {
+  final DateTime date;
+  Map<String, dynamic> morning;
+  Map<String, dynamic> afternoon;
+  DailyAttendance({required this.date, required this.morning, required this.afternoon});
+}
+
+enum DateFilter { week, month, year, custom }
+
+
+class ProfileScreen extends StatefulWidget {
+  const ProfileScreen({super.key});
+
+  @override
+  State<ProfileScreen> createState() => _ProfileScreenState();
+}
+
+class _ProfileScreenState extends State<ProfileScreen> {
+  Map<String, dynamic>? _profileData;
+  Map<String, dynamic>? _attendanceSummary; // This is for the original card
+  bool _isLoading = true;
+  String? _error;
+
+  List<dynamic> _allGrades = [];
+  List<dynamic> _allAttendance = []; // This is for the new detailed section
+  List<dynamic> _toReadBooks = [];
+  List<dynamic> _readBooks = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchProfileData();
+  }
+
+  Future<void> _fetchProfileData() async {
+    if (!mounted) return;
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      final response = await supabase.rpc('get_my_profile').single();
+
+      if (mounted) {
+        setState(() {
+          _profileData = response['profile_data'];
+          _attendanceSummary = response['attendance_summary'];
+          _allGrades = response['all_grades'] ?? [];
+          _allAttendance = response['all_attendance'] ?? [];
+          _processReadingList(response['reading_list']);
+          
+          if (_profileData != null && _profileData!['profile_image_url'] != null) {
+            Provider.of<UserProvider>(context, listen: false)
+                .setAvatarUrl(_profileData!['profile_image_url']);
+          }
+        });
+      }
+    } catch (e, stackTrace) {
+      developer.log('Failed in _fetchProfileData: ${e.toString()}', name: 'ProfileScreen', error: e, stackTrace: stackTrace);
+      if (mounted) {
+        setState(() => _error = "የፕሮፋይል መረጃን በማምጣት ላይ ስህተት ተፈጥሯል");
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  void _processReadingList(List<dynamic>? allBooks) {
+    if (allBooks == null) return;
+    _toReadBooks = allBooks.where((b) => b['status'] == 'to_read').toList();
+    _readBooks = allBooks.where((b) => b['status'] == 'read').toList();
+  }
+
+  Future<void> _markBookAsRead(int bookId) async {
+    try {
+      await supabase.from('reading_list').update({
+        'status': 'read',
+        'read_at': DateTime.now().toIso8601String(),
+      }).eq('id', bookId);
+      await _fetchProfileData();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('የመጽሐፉን ሁኔታ ማዘመን አልተቻለም'),
+            backgroundColor: Colors.red));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kBackgroundColor,
+      body: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 300),
+        child: _buildBody(),
+      ),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_isLoading) return _ProfileShimmer(key: const ValueKey('loading'));
+    if (_error != null)
+      return _ErrorDisplay(key: const ValueKey('error'), error: _error!, onRetry: _fetchProfileData);
+    if (_profileData == null)
+      return _ErrorDisplay(key: const ValueKey('no_data'), error: 'የፕሮፋይል መረጃን መጫን አልተቻለም', onRetry: _fetchProfileData);
+
+    return RefreshIndicator(
+      onRefresh: _fetchProfileData,
+      backgroundColor: kCardColor,
+      color: kPrimaryAccentColor,
+      child: CustomScrollView(
+        slivers: [
+          _ProfileSliverAppBar(profileData: _profileData!),
+          SliverList(
+            delegate: SliverChildListDelegate([
+              // THIS IS THE RESTORED SECTION
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  children: [
+                    FadeInUp(from: 20, child: _buildStatsRow()),
+                    const SizedBox(height: 24),
+                    FadeInUp(from: 20, delay: const Duration(milliseconds: 50), child: _buildSectionTitle('የማኅበር መረጃ')),
+                    FadeInUp(from: 20, delay: const Duration(milliseconds: 100), child: _buildMahberInfoCard()),
+                    const SizedBox(height: 24),
+                    FadeInUp(from: 20, delay: const Duration(milliseconds: 150), child: _buildSectionTitle('የግል መረጃ')),
+                    FadeInUp(from: 20, delay: const Duration(milliseconds: 200), child: _buildAboutCard()),
+                  ],
+                ),
+              ),
+              // THIS IS THE UPGRADED SECTION
+              _buildSection(
+                title: "የትምህርት አፈጻጸም",
+                icon: Icons.school_outlined,
+                child: _GradesSection(grades: _allGrades),
+              ),
+              _buildSection(
+                title: "የንባብ ጉዞ",
+                icon: Icons.book_outlined,
+                child: _ReadingSection(
+                  toReadBooks: _toReadBooks,
+                  readBooks: _readBooks,
+                  onMarkAsRead: (id) => _markBookAsRead(id),
+                ),
+              ),
+              _buildSection(
+                title: "የክትትል ታሪክ",
+                icon: Icons.event_available_outlined,
+                child: _AttendanceSection(attendance: _allAttendance),
+              ),
+              const SizedBox(height: 40),
+            ]),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  Widget _buildSection({required String title, required IconData icon, required Widget child}) {
+    return FadeInUp(
+      from: 20,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 24, 16, 0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, color: kPrimaryAccentColor, size: 22),
+                const SizedBox(width: 12),
+                Flexible(
+                  child: Text(title,
+                      style: GoogleFonts.notoSansEthiopic(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            child,
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --- ALL ORIGINAL WIDGETS ARE RESTORED AND CORRECTED ---
+  Widget _buildSectionTitle(String title) => Padding(
+        padding: const EdgeInsets.only(left: 4.0, bottom: 12.0),
+        child: Text(title,
+            style: GoogleFonts.notoSansEthiopic(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Colors.white)),
+      );
+
+  Widget _buildStatsRow() => Card(
+        color: kCardColor,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 20.0),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _buildStatItem('የአገልግሎት ክፍል', _profileData!['agelgilot_kifil']),
+              _buildStatItem('ክፍል', _profileData!['kifil']),
+              _buildStatItem('መንፈሳዊ ክፍል', _profileData!['spiritual_class']),
+            ],
+          ),
+        ),
+      );
+
+  Widget _buildStatItem(String label, String? value) {
+    return Expanded(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            value ?? 'N/A',
+            textAlign: TextAlign.center,
+            style: GoogleFonts.notoSansEthiopic(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: kPrimaryAccentColor,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: GoogleFonts.notoSansEthiopic(
+              fontSize: 14,
+              color: kSecondaryTextColor,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMahberInfoCard() => Card(
+        color: kCardColor,
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            children: [
+              _buildInfoItem(Icons.work_outline_rounded, 'የስራ ድርሻ',
+                  _profileData!['yesra_dirisha']),
+              const Divider(height: 24, color: Colors.white12),
+              _buildInfoItem(Icons.diversity_3_rounded, 'ልዩ የአገልግሎት ቡድን',
+                  _profileData!['budin']),
+            ],
+          ),
+        ),
+      );
+
+  Widget _buildAboutCard() => Card(
+        color: kCardColor,
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            children: [
+              _buildInfoItem(Icons.email_outlined, 'ኢሜይል',
+                  supabase.auth.currentUser?.email),
+              const Divider(height: 24, color: Colors.white12),
+              _buildInfoItem(
+                  Icons.phone_outlined, 'ስልክ', _profileData!['phone_number']),
+              const Divider(height: 24, color: Colors.white12),
+              _buildBirthdayInfoItem(),
+              const Divider(height: 24, color: Colors.white12),
+              _buildInfoItem(Icons.school_outlined, 'የትምህርት ደረጃ',
+                  _profileData!['academic_class']),
+            ],
+          ),
+        ),
+      );
+
+  Widget _buildBirthdayInfoItem() {
+    final age = _profileData!['age'] as int?;
+    String displayValue = 'አልተሞላም';
+
+    if (age != null) {
+      displayValue = '$age ዓመት';
+    }
+    return _buildInfoItem(Icons.cake_outlined, 'ዕድሜ', displayValue);
+  }
+
+  Widget _buildInfoItem(IconData icon, String label, String? value) {
+    return Row(
+      children: [
+        Icon(icon, size: 22, color: kPrimaryAccentColor),
+        const SizedBox(width: 16),
+        Text(label, style: GoogleFonts.notoSansEthiopic(fontSize: 16, color: kSecondaryTextColor)),
+        const Spacer(),
+        Expanded(
+          child: Text(
+            value ?? 'አልተሞላም',
+            textAlign: TextAlign.end,
+            overflow: TextOverflow.ellipsis,
+            style: GoogleFonts.notoSansEthiopic(fontSize: 16, color: Colors.white),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// --- ALL OTHER WIDGETS ARE NOW SELF-CONTAINED AND CORRECT ---
+
+class _ProfileSliverAppBar extends StatelessWidget {
+  final Map<String, dynamic> profileData;
+  const _ProfileSliverAppBar({required this.profileData});
+
+   Widget _buildStarRating(double rating) {
+    List<Widget> stars = [];
+    for (int i = 0; i < 5; i++) {
+      double starValue = rating - i;
+      IconData iconData = Icons.star_border;
+      Color color = Colors.grey.shade600;
+      if (starValue >= 0.95) {
+        iconData = Icons.star;
+        color = Colors.amber;
+      } else if (starValue >= 0.25) {
+        iconData = Icons.star_half;
+        color = Colors.amber;
+      }
+      stars.add(Icon(iconData, color: color, size: 24));
+    }
+    return Row(mainAxisAlignment: MainAxisAlignment.center, children: stars);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final imageUrl = profileData['profile_image_url'];
+    final bool hasImage = imageUrl != null && imageUrl.isNotEmpty;
+    final double totalStars = (profileData['total_stars'] as num?)?.toDouble() ?? 0.0;
+
+    return SliverAppBar(
+      expandedHeight: 290.0,
+      pinned: true,
+      stretch: true,
+      backgroundColor: kBackgroundColor,
+      flexibleSpace: FlexibleSpaceBar(
+        title: Text(profileData['full_name'] ?? 'No Name',
+            style: GoogleFonts.notoSansEthiopic(
+                color: Colors.white, fontWeight: FontWeight.bold)),
+        centerTitle: false,
+        titlePadding:
+            const EdgeInsetsDirectional.only(start: 16, end: 16, bottom: 16),
+        background: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (hasImage)
+              Image.network(imageUrl,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => Container(color: kCardColor)),
+            if (!hasImage) Container(color: kCardColor),
+            Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    kBackgroundColor,
+                    kBackgroundColor.withOpacity(0.5),
+                    Colors.transparent
+                  ],
+                  begin: Alignment.bottomCenter,
+                  end: Alignment.topCenter,
+                  stops: const [0.0, 0.5, 1.0],
+                ),
+              ),
+            ),
+             Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircleAvatar(
+                    radius: 50,
+                    backgroundColor: kCardColor,
+                    backgroundImage: hasImage ? NetworkImage(imageUrl) : null,
+                    child: !hasImage ? Icon(Icons.person, size: 50, color: kPrimaryAccentColor) : null,
+                  ),
+                  const SizedBox(height: 12),
+                  FadeIn(
+                    child: Column(
+                      children: [
+                        Text(
+                          totalStars.toStringAsFixed(2),
+                          style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.amber.shade200),
+                        ),
+                        const SizedBox(height: 4),
+                        _buildStarRating(totalStars),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                    child: Text(
+                      profileData['vision'] ?? 'ራዕይ አልተቀመጠም',
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.notoSansEthiopic(
+                        fontStyle: FontStyle.italic,
+                        color: Colors.white.withOpacity(0.9),
+                      ),
+                    ),
+                  ),
+                   const SizedBox(height: 50),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _GradesSection extends StatefulWidget {
+  final List<dynamic> grades;
+  const _GradesSection({required this.grades});
+
+  @override
+  State<_GradesSection> createState() => _GradesSectionState();
+}
+
+class _GradesSectionState extends State<_GradesSection> {
+  late List<dynamic> _allGrades;
+  List<String> _availableYearAndClasses = [];
+  String? _selectedYearAndClass;
+  List<dynamic> _filteredGrades = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _allGrades = widget.grades;
+    _processGradesAndYears(_allGrades);
+  }
+
+  void _processGradesAndYears(List<dynamic>? allGrades) {
+    if (!mounted || allGrades == null || allGrades.isEmpty) {
+      setState(() {
+        _availableYearAndClasses = [];
+        _selectedYearAndClass = null;
+        _filteredGrades = [];
+      });
+      return;
+    }
+    final Set<String> yearAndClassCombinations = allGrades
+        .where((grade) =>
+            grade['academic_year'] != null && grade['spiritual_class'] != null)
+        .map((grade) {
+      final year = grade['academic_year'];
+      final spiritualClass = grade['spiritual_class'];
+      return '$spiritualClass - $year';
+    }).toSet();
+
+    final List<String> sortedCombinations = yearAndClassCombinations.toList();
+    sortedCombinations.sort((a, b) {
+      final yearA = int.tryParse(a.split(' - ').last) ?? 0;
+      final yearB = int.tryParse(b.split(' - ').last) ?? 0;
+      if (yearA != yearB) return yearB.compareTo(yearA);
+      final classA = int.tryParse(a.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0;
+      final classB = int.tryParse(b.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0;
+      return classA.compareTo(classB);
+    });
+
+    setState(() {
+      _availableYearAndClasses = sortedCombinations;
+      _selectedYearAndClass =
+          sortedCombinations.isNotEmpty ? sortedCombinations.first : null;
+      _updateFilteredGrades();
+    });
+  }
+
+  void _updateFilteredGrades() {
+    if (_selectedYearAndClass == null) {
+      setState(() => _filteredGrades =
+          _availableYearAndClasses.isEmpty ? _allGrades : []);
+      return;
+    }
+    final parts = _selectedYearAndClass!.split(' - ');
+    final selectedClass = parts[0];
+    final selectedYear = int.tryParse(parts[1]);
+    setState(() {
+      _filteredGrades = _allGrades.where((g) {
+        return g['spiritual_class'] == selectedClass &&
+            g['academic_year'] == selectedYear;
+      }).toList();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (_availableYearAndClasses.length > 1)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 16.0),
+            child: DropdownButtonFormField<String>(
+              value: _selectedYearAndClass,
+              isExpanded: true,
+              items: _availableYearAndClasses
+                  .map((yearAndClass) => DropdownMenuItem(
+                      value: yearAndClass,
+                      child: Text(yearAndClass,
+                          overflow: TextOverflow.ellipsis)))
+                  .toList(),
+              onChanged: (newValue) {
+                setState(() {
+                  _selectedYearAndClass = newValue;
+                  _updateFilteredGrades();
+                });
+              },
+              decoration: InputDecoration(
+                filled: true,
+                fillColor: kCardColor,
+                contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 8),
+                isDense: true,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide.none,
+                ),
+              ),
+              style:
+                  GoogleFonts.notoSansEthiopic(color: Colors.white),
+              dropdownColor: kCardColor,
+              iconEnabledColor: kPrimaryAccentColor,
+            ),
+          ),
+        _buildGradesList(),
+      ],
+    );
+  }
+
+  Widget _buildGradesList() {
+    if (_allGrades.isEmpty) {
+      return _EmptyCard(message: "ምንም ውጤቶች እስካሁን አልተመዘገቡም");
+    }
+    if (_filteredGrades.isEmpty && _availableYearAndClasses.isNotEmpty) {
+      return _EmptyCard(message: "በተመረጠው ጊዜ ውስጥ ምንም ውጤቶች አልተገኙም");
+    }
+    return Card(
+      color: kCardColor,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: ListView.separated(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        itemCount: _filteredGrades.length,
+        itemBuilder: (context, index) =>
+            _buildGradeItem(_filteredGrades[index]),
+        separatorBuilder: (context, index) =>
+            const Divider(height: 1, color: Colors.white12),
+      ),
+    );
+  }
+
+  Widget _buildGradeItem(Map<String, dynamic> grade) {
+    final int total = ((grade['mid_exam'] ?? 0) as num).toInt() +
+        ((grade['final_exam'] ?? 0) as num).toInt() +
+        ((grade['assignment'] ?? 0) as num).toInt();
+    final status = total >= 50 ? 'አልፏል' : 'ወድቋል';
+    final statusColor =
+        status == 'አልፏል' ? Colors.green.shade400 : Colors.red.shade400;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                  child: Text(grade['course_name'] ?? 'N/A',
+                      style: GoogleFonts.notoSansEthiopic(
+                          fontWeight: FontWeight.bold, color: Colors.white))),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                    color: statusColor.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(20)),
+                child: Text(status,
+                    style: GoogleFonts.notoSansEthiopic(
+                        fontWeight: FontWeight.bold, color: statusColor)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              _buildGradeScore('ሚድ', (grade['mid_exam'] ?? 0).toString()),
+              _buildGradeScore('ፍጻሜ', (grade['final_exam'] ?? 0).toString()),
+              _buildGradeScore('አሳይመንት', (grade['assignment'] ?? 0).toString()),
+              _buildGradeScore('ጠቅላላ', total.toString(), isTotal: true),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildGradeScore(String label, String value, {bool isTotal = false}) {
+    return Column(
+      children: [
+        Text(label,
+            style: GoogleFonts.notoSansEthiopic(
+                fontSize: 12, color: kSecondaryTextColor)),
+        const SizedBox(height: 2),
+        Text(
+          value,
+          style: GoogleFonts.notoSansEthiopic(
+            fontSize: 16,
+            fontWeight: isTotal ? FontWeight.bold : FontWeight.w500,
+            color: isTotal ? kPrimaryAccentColor : Colors.white,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ReadingSection extends StatelessWidget {
+  final List<dynamic> toReadBooks;
+  final List<dynamic> readBooks;
+  final Function(int) onMarkAsRead;
+
+  const _ReadingSection({required this.toReadBooks, required this.readBooks, required this.onMarkAsRead});
+
+  @override
+  Widget build(BuildContext context) {
+    if (toReadBooks.isEmpty && readBooks.isEmpty) {
+      return _EmptyCard(message: "ምንም የተመደቡ መጽሐፍት የሉም");
+    }
+
+    return Card(
+      color: kCardColor,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: DefaultTabController(
+        length: 2,
+        child: Column(
+          children: [
+            Container(
+              color: kCardColor.withOpacity(0.5),
+              child: TabBar(
+                tabs: [
+                  Tab(child: Text('ለማንበብ (${toReadBooks.length})', style: GoogleFonts.notoSansEthiopic())),
+                  Tab(child: Text('የተጠናቀቁ (${readBooks.length})', style: GoogleFonts.notoSansEthiopic())),
+                ],
+                labelColor: kPrimaryAccentColor,
+                unselectedLabelColor: kSecondaryTextColor,
+                indicatorColor: kPrimaryAccentColor,
+              ),
+            ),
+            SizedBox(
+              height: 250,
+              child: TabBarView(
+                children: [
+                  _BookList(books: toReadBooks, onMarkAsRead: onMarkAsRead),
+                  _BookList(books: readBooks),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _BookList extends StatelessWidget {
+  final List<dynamic> books;
+  final Function(int)? onMarkAsRead;
+  const _BookList({required this.books, this.onMarkAsRead});
+
+  @override
+  Widget build(BuildContext context) {
+    if (books.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Text(
+            onMarkAsRead != null ? 'በዝርዝሩ ላይ ምንም መጽሐፍ የለም!' : 'እስካሁን የተጠናቀቁ መጻሕፍት የሉም።',
+            style: GoogleFonts.notoSansEthiopic(color: kSecondaryTextColor),
+          ),
+        ),
+      );
+    }
+    return ListView.separated(
+      itemCount: books.length,
+      separatorBuilder: (context, index) => const Divider(height: 1, indent: 16, endIndent: 16, color: Colors.white12),
+      itemBuilder: (context, index) =>
+          _BookListTile(book: books[index], onMarkAsRead: onMarkAsRead),
+    );
+  }
+}
+
+class _BookListTile extends StatelessWidget {
+  final Map<String, dynamic> book;
+  final Function(int)? onMarkAsRead;
+  const _BookListTile({required this.book, this.onMarkAsRead});
+
+  @override
+  Widget build(BuildContext context) {
+    final isCompletable = onMarkAsRead != null;
+    final finishByStr = book['finish_by'] as String?;
+    DateTime? finishByDate;
+    bool isOverdue = false;
+    if (finishByStr != null) {
+      finishByDate = DateTime.tryParse(finishByStr);
+      if (finishByDate != null) {
+        isOverdue = finishByDate.isBefore(DateTime.now()) && isCompletable;
+      }
+    }
+
+    final readAtStr = book['read_at'] as String?;
+    String completedText = 'ተጠናቋል';
+    if (readAtStr != null) {
+      try {
+        completedText =
+            'የተጠናቀቀው በ: ${DateFormat.yMMMd().format(DateTime.parse(readAtStr).toLocal())}';
+      } catch (_) {}
+    }
+
+    return ListTile(
+      leading: Icon(
+        isCompletable ? (isOverdue ? Icons.warning_amber_rounded : Icons.book_outlined) : Icons.check_circle_outline_rounded,
+        color: isCompletable ? (isOverdue ? Colors.orange.shade600 : kPrimaryAccentColor) : Colors.green.shade400,
+      ),
+      title: Text(book['book_title'] ?? 'ርዕስ የሌለው መጽሐፍ', style: GoogleFonts.notoSansEthiopic(color: Colors.white)),
+      subtitle: Text(
+        isCompletable ? (finishByDate != null ? 'የመጨረሻ ቀን: ${DateFormat.yMMMd().format(finishByDate)}' : 'የመጨረሻ ቀን የለውም') : completedText,
+        style: GoogleFonts.notoSansEthiopic(
+          color: isOverdue ? Colors.red.shade400 : kSecondaryTextColor,
+          fontWeight: isOverdue ? FontWeight.bold : FontWeight.normal,
+        ),
+      ),
+       trailing: isCompletable ? IconButton(
+        icon: const Icon(Icons.check_circle_outline_rounded, color: Colors.green),
+        tooltip: 'Mark as Read',
+        onPressed: () => onMarkAsRead!(book['id']),
+      ) : null,
+    );
+  }
+}
+
+class _AttendanceSection extends StatefulWidget {
+  final List<dynamic> attendance;
+  const _AttendanceSection({required this.attendance});
+
+  @override
+  State<_AttendanceSection> createState() => _AttendanceSectionState();
+}
+
+class _AttendanceSectionState extends State<_AttendanceSection> {
+  DateFilter _selectedFilter = DateFilter.month;
+  DateTimeRange? _customDateRange;
+  List<DailyAttendance> _filteredAttendance = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _filterAttendanceData();
+  }
+
+  void _filterAttendanceData() {
+    final now = DateTime.now();
+    DateTimeRange range;
+    switch (_selectedFilter) {
+      case DateFilter.week:
+        final startOfWeek = now.subtract(Duration(days: now.weekday - 1));
+        range = DateTimeRange(start: DateTime(startOfWeek.year, startOfWeek.month, startOfWeek.day), end: now);
+        break;
+      case DateFilter.month:
+        range = DateTimeRange(start: DateTime(now.year, now.month, 1), end: now);
+        break;
+      case DateFilter.year:
+        range = DateTimeRange(start: DateTime(now.year, 1, 1), end: now);
+        break;
+      case DateFilter.custom:
+        range = _customDateRange ?? DateTimeRange(start: now.subtract(const Duration(days: 30)), end: now);
+        break;
+    }
+
+    final Map<DateTime, DailyAttendance> groupedByDate = {};
+    for (var record in widget.attendance) {
+      try {
+        final dateString = record['date'] as String?;
+        if (dateString == null) continue;
+        final date = DateTime.parse(dateString);
+
+        final recordDate = DateTime(date.year, date.month, date.day);
+        final startDate = DateTime(range.start.year, range.start.month, range.start.day);
+        final endDate = DateTime(range.end.year, range.end.month, range.end.day);
+
+        if (!recordDate.isBefore(startDate) && !recordDate.isAfter(endDate)) {
+          final session = record['session'];
+
+          if (!groupedByDate.containsKey(recordDate)) {
+            groupedByDate[recordDate] = DailyAttendance(date: recordDate, morning: {}, afternoon: {});
+          }
+
+          if (session == 'morning') {
+            groupedByDate[recordDate]!.morning = record;
+          } else if (session == 'afternoon') {
+            groupedByDate[recordDate]!.afternoon = record;
+          }
+        }
+      } catch (e) {
+        debugPrint("Could not process attendance record: $record. Error: $e");
+      }
+    }
+
+    final sortedDays = groupedByDate.values.toList()
+      ..sort((a, b) => b.date.compareTo(a.date));
+
+    setState(() {
+      _filteredAttendance = sortedDays;
+    });
+  }
+
+  Future<void> _selectCustomDateRange() async {
+    final now = DateTime.now();
+    final picked = await showDateRangePicker(
+      context: context,
+      initialDateRange: _customDateRange ?? DateTimeRange(start: now.subtract(const Duration(days: 7)), end: now),
+      firstDate: DateTime(2020),
+      lastDate: now,
+    );
+    if (picked != null) {
+      setState(() {
+        _customDateRange = picked;
+        _selectedFilter = DateFilter.custom;
+      });
+      _filterAttendanceData();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.attendance.isEmpty) {
+      return _EmptyCard(message: "ምንም የክትትል መረጃ የለም");
+    }
+
+    return Column(
+      children: [
+        _buildFilterChips(),
+        const SizedBox(height: 16),
+        if (_filteredAttendance.isEmpty)
+          _EmptyCard(message: "በተመረጠው ጊዜ ውስጥ ምንም መረጃ አልተገኘም")
+        else
+          ListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: _filteredAttendance.length > 5 ? 5 : _filteredAttendance.length,
+            itemBuilder: (context, index) {
+              final day = _filteredAttendance[index];
+              return FadeInUp(
+                from: 20,
+                delay: Duration(milliseconds: 50 * index),
+                child: _AttendanceDayCard(day: day),
+              );
+            },
+          ),
+        if (widget.attendance.length > 5)
+          Padding(
+            padding: const EdgeInsets.only(top: 16.0),
+            child: OutlinedButton.icon(
+              icon: const Icon(Icons.history),
+              label: Text("ሙሉ ታሪክ ይመልከቱ", style: GoogleFonts.notoSansEthiopic()),
+              onPressed: () => context.push('/attendance-history'),
+              style: OutlinedButton.styleFrom(foregroundColor: kPrimaryAccentColor),
+            ),
+          )
+      ],
+    );
+  }
+
+  Widget _buildFilterChips() {
+    return SizedBox(
+      width: double.infinity,
+      child: SegmentedButton<DateFilter>(
+        segments: [
+          ButtonSegment(value: DateFilter.week, label: Text('ሳምንት', style: GoogleFonts.notoSansEthiopic())),
+          ButtonSegment(value: DateFilter.month, label: Text('ወር', style: GoogleFonts.notoSansEthiopic())),
+          ButtonSegment(value: DateFilter.year, label: Text('ዓመት', style: GoogleFonts.notoSansEthiopic())),
+          ButtonSegment(value: DateFilter.custom, icon: const Icon(Icons.calendar_month_outlined),
+            label: _selectedFilter == DateFilter.custom ? Text('ልዩ', style: GoogleFonts.notoSansEthiopic()) : null,
+          ),
+        ],
+        selected: {_selectedFilter},
+        onSelectionChanged: (newSelection) {
+          if (newSelection.first == DateFilter.custom) {
+            _selectCustomDateRange();
+          } else {
+            setState(() {
+              _selectedFilter = newSelection.first;
+              _customDateRange = null;
+            });
+            _filterAttendanceData();
+          }
+        },
+        style: SegmentedButton.styleFrom(
+          backgroundColor: kCardColor,
+          foregroundColor: kSecondaryTextColor,
+          selectedForegroundColor: kPrimaryAccentColor,
+          selectedBackgroundColor: kBackgroundColor,
+        ),
+      ),
+    );
+  }
+}
+
+class _AttendanceDayCard extends StatelessWidget {
+  final DailyAttendance day;
+  const _AttendanceDayCard({required this.day});
+
+  @override
+  Widget build(BuildContext context) {
+    final String ethiopianDateString = EthiopianDate.fromGregorian(day.date).toString();
+    final gregorianDate = DateFormat.yMMMEd().format(day.date);
+    final topic = day.morning['topic'] as String? ?? day.afternoon['topic'] as String?;
+
+    return Card(
+      color: kCardColor,
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('$ethiopianDateString ($gregorianDate)',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: Colors.white, fontWeight: FontWeight.bold)),
+            if (topic != null && topic.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 8.0),
+                child: Text("ርዕስ: $topic",
+                    style: GoogleFonts.notoSansEthiopic(
+                        color: kSecondaryTextColor)),
+              ),
+            const Divider(height: 24, color: Colors.white12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _SessionStatus(label: 'ጥዋት', record: day.morning),
+                _SessionStatus(label: 'ከሰዓት', record: day.afternoon),
+              ],
+            )
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SessionStatus extends StatelessWidget {
+  final String label;
+  final Map<String, dynamic> record;
+  const _SessionStatus({required this.label, required this.record});
+
+  Color _getStatusColor(String status) {
+    switch (status) {
+      case 'present': return Colors.green.shade400;
+      case 'absent': return Colors.red.shade400;
+      case 'late': return Colors.orange.shade400;
+      case 'permission': return Colors.blue.shade400;
+      default: return kSecondaryTextColor;
+    }
+  }
+
+  String _getStatusText(String status) {
+    switch (status) {
+      case 'present': return 'ተገኝቷል';
+      case 'absent': return 'ቀርቷል';
+      case 'late': return 'አርፍዷል';
+      case 'permission': return 'በፍቃድ';
+      default: return 'N/A';
+    }
+  }
+
+  String? _formatLateTime(BuildContext context, String? lateTimeStr) {
+    if (lateTimeStr == null) return null;
+    try {
+      final parts = lateTimeStr.split(':');
+      final time = TimeOfDay(hour: int.parse(parts[0]), minute: int.parse(parts[1]));
+      return time.format(context);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final status = record['status'] as String? ?? 'unknown';
+    final lateTime = record['late_time'] as String?;
+    final color = _getStatusColor(status);
+    final text = _getStatusText(status);
+    final formattedLateTime = _formatLateTime(context, lateTime);
+
+    return Column(
+      children: [
+        Text(label,
+            style: GoogleFonts.notoSansEthiopic(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: Colors.white)),
+        const SizedBox(height: 8),
+        Chip(
+          label: Text(text,
+              style: GoogleFonts.notoSansEthiopic(
+                  color: color, fontWeight: FontWeight.bold)),
+          backgroundColor: color.withOpacity(0.2),
+          side: BorderSide.none,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+        ),
+        if (status == 'late' && formattedLateTime != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 6.0),
+            child: Text(
+              formattedLateTime,
+              style: TextStyle(
+                  color: color, fontSize: 12, fontWeight: FontWeight.bold),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _EmptyCard extends StatelessWidget {
+  final String message;
+  const _EmptyCard({required this.message});
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: kCardColor,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32.0),
+          child: Text(message,
+              textAlign: TextAlign.center,
+              style: GoogleFonts.notoSansEthiopic(color: kSecondaryTextColor)),
+        ),
+      ),
+    );
+  }
+}
+
+class _ProfileShimmer extends StatelessWidget {
+  const _ProfileShimmer({super.key});
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Shimmer.fromColors(
+      baseColor: kCardColor,
+      highlightColor: kBackgroundColor,
+      child: CustomScrollView(
+        physics: const NeverScrollableScrollPhysics(),
+        slivers: [
+          SliverAppBar(
+            expandedHeight: 280.0,
+            backgroundColor: theme.primaryColor,
+            flexibleSpace: FlexibleSpaceBar(
+              background: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const SizedBox(height: 40),
+                  const CircleAvatar(radius: 50),
+                  const SizedBox(height: 12),
+                  Container(height: 16, width: 200, color: Colors.white),
+                  const SizedBox(height: 50),
+                ],
+              ),
+            ),
+          ),
+          SliverPadding(
+            padding: const EdgeInsets.all(16.0),
+            sliver: SliverList(
+              delegate: SliverChildListDelegate([
+                Container(height: 90, decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12))),
+                const SizedBox(height: 24),
+                Container(height: 20, width: 150, color: Colors.white),
+                const SizedBox(height: 12),
+                Container(height: 120, decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12))),
+              ]),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ErrorDisplay extends StatelessWidget {
+  final String error;
+  final VoidCallback onRetry;
+  const _ErrorDisplay({required this.error, required this.onRetry, super.key});
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.cloud_off, color: theme.colorScheme.secondary, size: 60),
+            const SizedBox(height: 20),
+            Text('ውይ, አንድ ስህተት ተፈጥሯል', textAlign: TextAlign.center, style: GoogleFonts.notoSansEthiopic(fontSize: theme.textTheme.headlineSmall?.fontSize)),
+            const SizedBox(height: 10),
+            Text(error, textAlign: TextAlign.center, style: GoogleFonts.notoSansEthiopic(color: Colors.white70)),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(onPressed: onRetry, icon: const Icon(Icons.refresh), label: Text('እንደገና ይሞክሩ', style: GoogleFonts.notoSansEthiopic())),
+          ],
+        ),
+      ),
+    );
+  }
+}
